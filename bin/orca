@@ -1,0 +1,831 @@
+#!/bin/bash
+set -e
+
+# orca — Docker-isolated development session orchestrator
+# https://github.com/rasca/orca
+
+ORCA_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Source all library modules
+source "$ORCA_ROOT/lib/config.sh"
+source "$ORCA_ROOT/lib/session.sh"
+source "$ORCA_ROOT/lib/ports.sh"
+source "$ORCA_ROOT/lib/docker.sh"
+source "$ORCA_ROOT/lib/tmux.sh"
+source "$ORCA_ROOT/lib/git.sh"
+
+# ─── Commands ───────────────────────────────────────────────────────────────
+
+cmd_build() {
+    docker_build
+}
+
+cmd_add() {
+    local session_name="$1"
+
+    if [ -z "$session_name" ]; then
+        echo "Error: Session name required"
+        echo "Usage: orca add <name>"
+        exit 1
+    fi
+
+    # Find and load config
+    local config_file
+    config_file=$(find_config) || { echo "Error: orchestrator.yml not found. Run 'orca init' to create one." >&2; exit 1; }
+    local project_root
+    project_root=$(dirname "$config_file")
+    load_config "$config_file"
+
+    local session_key="$CFG_PROJECT/$session_name"
+    local container_name="orca-${CFG_PROJECT}-${session_name}"
+    local tmux_session_name="${CFG_PROJECT}-${session_name}"
+
+    # Check for existing session
+    if session_exists "$session_key"; then
+        echo "Error: Session '$session_name' already exists for project '$CFG_PROJECT'"
+        exit 1
+    fi
+
+    if tmux_session_exists "$tmux_session_name"; then
+        echo "Error: tmux session '$tmux_session_name' already exists"
+        exit 1
+    fi
+
+    # Allocate ports
+    echo "Allocating ports..."
+    local port_vars=()
+    while IFS= read -r line; do
+        [ -n "$line" ] && port_vars+=("$line")
+    done < <(allocate_ports "$config_file")
+
+    for pv in "${port_vars[@]}"; do
+        echo "  ${pv%%=*}: ${pv#*=}"
+    done
+
+    # Determine workspace path
+    local workspace_path="$project_root"
+    local branch_name=""
+
+    # Create worktree if enabled
+    if [ "$CFG_WORKTREE_ENABLED" = "true" ]; then
+        workspace_path="$(dirname "$project_root")/${CFG_PROJECT}-${session_name}"
+        branch_name="$session_name"
+
+        create_worktree "$project_root" "$session_name" "$CFG_BASE_BRANCH" "$workspace_path"
+
+        # Copy setup files
+        copy_setup_files "$project_root" "$workspace_path" "$config_file"
+
+        # Apply env substitutions
+        apply_env_substitutions "$workspace_path" "$config_file" "${port_vars[@]}"
+    fi
+
+    # Build docker run args: ports -- env_vars -- volumes
+    local docker_args=()
+    for pv in "${port_vars[@]}"; do
+        docker_args+=("$pv")
+    done
+    docker_args+=("--")
+
+    # Env vars
+    local env_vars
+    env_vars=$(get_env_vars "$config_file")
+    for ev in $env_vars; do
+        [ -n "$ev" ] && [ "$ev" != "null" ] && docker_args+=("$ev")
+    done
+    docker_args+=("--")
+
+    # Named volumes
+    local volumes
+    volumes=$(get_docker_volumes "$config_file")
+    for vol in $volumes; do
+        if [ -n "$vol" ] && [ "$vol" != "null" ]; then
+            local vol_name="${vol%%=*}"
+            local vol_path="${vol#*=}"
+            docker_args+=("${container_name}-${vol_name}=${vol_path}")
+        fi
+    done
+
+    # Start container
+    docker_start_container "$container_name" "$workspace_path" "${docker_args[@]}"
+
+    # Wait for container to be ready
+    sleep 1
+
+    # Run setup (install deps)
+    docker_run_setup "$container_name" "$config_file"
+
+    # Create tmux session
+    echo "Creating tmux session: $tmux_session_name"
+    create_tmux_session "$tmux_session_name" "$container_name" "$config_file" \
+        "$CFG_PROJECT" "$session_name" "${port_vars[@]}"
+
+    # Save session state
+    local ports_json
+    ports_json=$(ports_to_json "${port_vars[@]}")
+
+    local volumes_json="{}"
+    for vol in $volumes; do
+        if [ -n "$vol" ] && [ "$vol" != "null" ]; then
+            local vol_name="${vol%%=*}"
+            volumes_json=$(echo "$volumes_json" | jq --arg k "$vol_name" --arg v "${container_name}-${vol_name}" '.[$k] = $v')
+        fi
+    done
+
+    local session_json
+    session_json=$(jq -n \
+        --arg project "$CFG_PROJECT" \
+        --arg project_root "$project_root" \
+        --arg session_name "$session_name" \
+        --arg container_name "$container_name" \
+        --arg workspace_path "$workspace_path" \
+        --arg branch "$branch_name" \
+        --argjson ports "$ports_json" \
+        --argjson volumes "$volumes_json" \
+        --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{
+            project: $project,
+            project_root: $project_root,
+            session_name: $session_name,
+            container_name: $container_name,
+            worktree_path: $workspace_path,
+            branch: $branch,
+            ports: $ports,
+            volumes: $volumes,
+            created_at: $created_at
+        }')
+
+    session_save "$session_key" "$session_json"
+
+    echo ""
+    echo "Session '$session_name' created successfully!"
+    echo "Attach with: orca attach $session_name"
+    echo "  or: tmux attach -t $tmux_session_name"
+    for pv in "${port_vars[@]}"; do
+        local pname="${pv%%_port=*}"
+        local pnum="${pv#*=}"
+        echo "  ${pname}: http://localhost:${pnum}"
+    done
+}
+
+cmd_pr() {
+    local pr_number="$1"
+
+    if [ -z "$pr_number" ]; then
+        echo "Error: PR number required"
+        echo "Usage: orca pr <number>"
+        exit 1
+    fi
+
+    if ! [[ "$pr_number" =~ ^[0-9]+$ ]]; then
+        echo "Error: PR number must be numeric"
+        exit 1
+    fi
+
+    local session_name="pr-$pr_number"
+
+    # Find and load config
+    local config_file
+    config_file=$(find_config) || { echo "Error: orchestrator.yml not found." >&2; exit 1; }
+    local project_root
+    project_root=$(dirname "$config_file")
+    load_config "$config_file"
+
+    local session_key="$CFG_PROJECT/$session_name"
+    local container_name="orca-${CFG_PROJECT}-${session_name}"
+    local tmux_session_name="${CFG_PROJECT}-${session_name}"
+    local workspace_path="$(dirname "$project_root")/${CFG_PROJECT}-${session_name}"
+
+    if session_exists "$session_key"; then
+        echo "Error: Session '$session_name' already exists. Use 'orca update-pr $pr_number' to update."
+        exit 1
+    fi
+
+    # Allocate ports
+    echo "Allocating ports..."
+    local port_vars=()
+    while IFS= read -r line; do
+        [ -n "$line" ] && port_vars+=("$line")
+    done < <(allocate_ports "$config_file")
+
+    for pv in "${port_vars[@]}"; do
+        echo "  ${pv%%=*}: ${pv#*=}"
+    done
+
+    # Create worktree from PR
+    local pr_metadata
+    pr_metadata=$(create_worktree_from_pr "$project_root" "$pr_number" "$workspace_path")
+
+    local pr_branch pr_title pr_author pr_url
+    pr_branch=$(echo "$pr_metadata" | grep "^PR_BRANCH=" | cut -d= -f2-)
+    pr_title=$(echo "$pr_metadata" | grep "^PR_TITLE=" | cut -d= -f2-)
+    pr_author=$(echo "$pr_metadata" | grep "^PR_AUTHOR=" | cut -d= -f2-)
+    pr_url=$(echo "$pr_metadata" | grep "^PR_URL=" | cut -d= -f2-)
+
+    # Copy setup files
+    copy_setup_files "$project_root" "$workspace_path" "$config_file"
+    apply_env_substitutions "$workspace_path" "$config_file" "${port_vars[@]}"
+
+    # Build docker args
+    local docker_args=()
+    for pv in "${port_vars[@]}"; do
+        docker_args+=("$pv")
+    done
+    docker_args+=("--")
+
+    local env_vars
+    env_vars=$(get_env_vars "$config_file")
+    for ev in $env_vars; do
+        [ -n "$ev" ] && [ "$ev" != "null" ] && docker_args+=("$ev")
+    done
+    docker_args+=("--")
+
+    local volumes
+    volumes=$(get_docker_volumes "$config_file")
+    for vol in $volumes; do
+        if [ -n "$vol" ] && [ "$vol" != "null" ]; then
+            local vol_name="${vol%%=*}"
+            local vol_path="${vol#*=}"
+            docker_args+=("${container_name}-${vol_name}=${vol_path}")
+        fi
+    done
+
+    # Start container
+    docker_start_container "$container_name" "$workspace_path" "${docker_args[@]}"
+    sleep 1
+    docker_run_setup "$container_name" "$config_file"
+
+    # Create tmux session
+    echo "Creating tmux session: $tmux_session_name"
+    create_tmux_session "$tmux_session_name" "$container_name" "$config_file" \
+        "$CFG_PROJECT" "$session_name" "${port_vars[@]}"
+
+    # Save session state with PR metadata
+    local ports_json
+    ports_json=$(ports_to_json "${port_vars[@]}")
+
+    local volumes_json="{}"
+    for vol in $volumes; do
+        if [ -n "$vol" ] && [ "$vol" != "null" ]; then
+            local vol_name="${vol%%=*}"
+            volumes_json=$(echo "$volumes_json" | jq --arg k "$vol_name" --arg v "${container_name}-${vol_name}" '.[$k] = $v')
+        fi
+    done
+
+    local session_json
+    session_json=$(jq -n \
+        --arg project "$CFG_PROJECT" \
+        --arg project_root "$project_root" \
+        --arg session_name "$session_name" \
+        --arg container_name "$container_name" \
+        --arg workspace_path "$workspace_path" \
+        --arg branch "$pr_branch" \
+        --argjson ports "$ports_json" \
+        --argjson volumes "$volumes_json" \
+        --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --arg pr_number "$pr_number" \
+        --arg pr_title "$pr_title" \
+        --arg pr_author "$pr_author" \
+        --arg pr_url "$pr_url" \
+        '{
+            project: $project,
+            project_root: $project_root,
+            session_name: $session_name,
+            container_name: $container_name,
+            worktree_path: $workspace_path,
+            branch: $branch,
+            ports: $ports,
+            volumes: $volumes,
+            created_at: $created_at,
+            pr: { number: ($pr_number | tonumber), title: $pr_title, author: $pr_author, url: $pr_url }
+        }')
+
+    session_save "$session_key" "$session_json"
+
+    echo ""
+    echo "PR Session '$session_name' created successfully!"
+    echo "PR: $pr_url"
+    echo "Attach with: orca attach $session_name"
+    for pv in "${port_vars[@]}"; do
+        local pname="${pv%%_port=*}"
+        local pnum="${pv#*=}"
+        echo "  ${pname}: http://localhost:${pnum}"
+    done
+}
+
+cmd_update_pr() {
+    local pr_number="$1"
+
+    if [ -z "$pr_number" ]; then
+        echo "Error: PR number required"
+        echo "Usage: orca update-pr <number>"
+        exit 1
+    fi
+
+    local session_name="pr-$pr_number"
+    local config_file
+    config_file=$(find_config) || { echo "Error: orchestrator.yml not found." >&2; exit 1; }
+    load_config "$config_file"
+
+    local session_key="$CFG_PROJECT/$session_name"
+    local container_name
+    container_name=$(session_get_field "$session_key" "container_name")
+
+    if [ -z "$container_name" ]; then
+        echo "Error: PR session '$session_name' not found"
+        exit 1
+    fi
+
+    echo "Updating PR #$pr_number..."
+    docker exec -it "$container_name" bash -c "cd /workspace && gh pr checkout $pr_number --force"
+
+    echo ""
+    echo "Recent commits:"
+    docker exec "$container_name" bash -c "cd /workspace && git log --oneline -5"
+}
+
+cmd_attach() {
+    local session_name="$1"
+
+    if [ -z "$session_name" ]; then
+        echo "Error: Session name required"
+        echo "Usage: orca attach <name>"
+        exit 1
+    fi
+
+    # Find project to determine tmux session name
+    local config_file
+    config_file=$(find_config) || { echo "Error: orchestrator.yml not found." >&2; exit 1; }
+    load_config "$config_file"
+
+    local tmux_session_name="${CFG_PROJECT}-${session_name}"
+
+    if ! tmux_session_exists "$tmux_session_name"; then
+        echo "Error: tmux session '$tmux_session_name' not found"
+        echo "Run 'orca resume $session_name' to restart it"
+        exit 1
+    fi
+
+    exec tmux attach -t "$tmux_session_name"
+}
+
+cmd_stop() {
+    local session_name="$1"
+
+    if [ -z "$session_name" ]; then
+        echo "Error: Session name required"
+        echo "Usage: orca stop <name>"
+        exit 1
+    fi
+
+    local config_file
+    config_file=$(find_config) || { echo "Error: orchestrator.yml not found." >&2; exit 1; }
+    load_config "$config_file"
+
+    local session_key="$CFG_PROJECT/$session_name"
+    local container_name
+    container_name=$(session_get_field "$session_key" "container_name")
+    local tmux_session_name="${CFG_PROJECT}-${session_name}"
+
+    if [ -z "$container_name" ]; then
+        echo "Error: Session '$session_name' not found"
+        exit 1
+    fi
+
+    kill_tmux_session "$tmux_session_name"
+    docker_stop_container "$container_name"
+
+    echo "Session '$session_name' stopped. Worktree and volumes preserved."
+    echo "Resume with: orca resume $session_name"
+}
+
+cmd_resume() {
+    local session_name="$1"
+
+    local config_file
+    config_file=$(find_config) || { echo "Error: orchestrator.yml not found." >&2; exit 1; }
+    load_config "$config_file"
+
+    if [ -z "$session_name" ]; then
+        # Resume all sessions for this project
+        echo "Resuming all sessions for $CFG_PROJECT..."
+        local keys
+        keys=$(session_keys_for_project "$CFG_PROJECT")
+
+        if [ -z "$keys" ]; then
+            echo "No sessions to resume"
+            exit 0
+        fi
+
+        for key in $keys; do
+            local name
+            name=$(echo "$key" | cut -d/ -f2)
+            local tmux_name="${CFG_PROJECT}-${name}"
+
+            if tmux_session_exists "$tmux_name"; then
+                echo "Session '$name' already has tmux, skipping..."
+            else
+                echo ""
+                echo "Resuming '$name'..."
+                _resume_single "$name" "$config_file"
+            fi
+        done
+
+        echo ""
+        echo "All sessions resumed!"
+        cmd_list
+        return
+    fi
+
+    _resume_single "$session_name" "$config_file"
+}
+
+_resume_single() {
+    local session_name="$1"
+    local config_file="$2"
+
+    local session_key="$CFG_PROJECT/$session_name"
+    local container_name
+    container_name=$(session_get_field "$session_key" "container_name")
+    local tmux_session_name="${CFG_PROJECT}-${session_name}"
+
+    if [ -z "$container_name" ]; then
+        echo "Error: Session '$session_name' not found"
+        return 1
+    fi
+
+    # Start container if stopped
+    if ! docker_is_running "$container_name"; then
+        echo "Starting container: $container_name"
+        docker start "$container_name"
+        sleep 1
+    fi
+
+    # Kill existing tmux session if any
+    kill_tmux_session "$tmux_session_name"
+
+    # Rebuild port vars from session data
+    local port_vars=()
+    local ports_json
+    ports_json=$(session_get_field "$session_key" "ports")
+
+    if [ -n "$ports_json" ]; then
+        while IFS= read -r line; do
+            [ -n "$line" ] && port_vars+=("$line")
+        done < <(echo "$ports_json" | jq -r 'to_entries[] | "\(.key)_port=\(.value)"')
+    fi
+
+    # Create tmux session with resume commands
+    echo "Creating tmux session: $tmux_session_name"
+    create_tmux_session_resume "$tmux_session_name" "$container_name" "$config_file" \
+        "$CFG_PROJECT" "$session_name" "${port_vars[@]}"
+
+    echo ""
+    echo "Session '$session_name' resumed!"
+    echo "Attach with: orca attach $session_name"
+    for pv in "${port_vars[@]}"; do
+        local pname="${pv%%_port=*}"
+        local pnum="${pv#*=}"
+        echo "  ${pname}: http://localhost:${pnum}"
+    done
+}
+
+cmd_remove() {
+    local session_name="$1"
+
+    if [ -z "$session_name" ]; then
+        echo "Error: Session name required"
+        echo "Usage: orca remove <name>"
+        exit 1
+    fi
+
+    local config_file
+    config_file=$(find_config) || { echo "Error: orchestrator.yml not found." >&2; exit 1; }
+    load_config "$config_file"
+
+    local session_key="$CFG_PROJECT/$session_name"
+    local container_name
+    container_name=$(session_get_field "$session_key" "container_name")
+    local tmux_session_name="${CFG_PROJECT}-${session_name}"
+
+    if [ -z "$container_name" ]; then
+        echo "Error: Session '$session_name' not found"
+        exit 1
+    fi
+
+    echo "Removing session '$session_name'..."
+
+    # Kill tmux
+    kill_tmux_session "$tmux_session_name"
+
+    # Remove container
+    docker_rm_container "$container_name"
+
+    # Remove named volumes
+    local volumes_json
+    volumes_json=$(session_get_field "$session_key" "volumes")
+    if [ -n "$volumes_json" ] && [ "$volumes_json" != "null" ]; then
+        while IFS= read -r vol; do
+            [ -n "$vol" ] && docker_rm_volume "$vol"
+        done < <(echo "$volumes_json" | jq -r '.[]')
+    fi
+
+    # Remove worktree and branch
+    local worktree_path branch
+    worktree_path=$(session_get_field "$session_key" "worktree_path")
+    branch=$(session_get_field "$session_key" "branch")
+    local project_root
+    project_root=$(session_get_field "$session_key" "project_root")
+
+    if [ -n "$worktree_path" ] && [ "$worktree_path" != "$project_root" ]; then
+        remove_worktree "$project_root" "$worktree_path" "$branch"
+    fi
+
+    # Remove from state
+    session_remove "$session_key"
+
+    echo "Session '$session_name' removed successfully!"
+}
+
+cmd_list() {
+    local config_file project_filter
+    config_file=$(find_config 2>/dev/null)
+
+    if [ -n "$config_file" ]; then
+        load_config "$config_file" 2>/dev/null
+        project_filter="$CFG_PROJECT"
+    fi
+
+    init_sessions
+
+    echo "Active Orca Sessions"
+    echo "===================="
+
+    local keys
+    keys=$(session_keys)
+
+    if [ -z "$keys" ]; then
+        echo "No active sessions"
+        return
+    fi
+
+    for key in $keys; do
+        local project session_name container_name
+        project=$(session_get_field "$key" "project")
+        session_name=$(session_get_field "$key" "session_name")
+        container_name=$(session_get_field "$key" "container_name")
+
+        # If we have a project filter, skip non-matching sessions
+        if [ -n "$project_filter" ] && [ "$project" != "$project_filter" ]; then
+            continue
+        fi
+
+        local status
+        status=$(docker_status "$container_name")
+
+        local tmux_status="detached"
+        if tmux_session_exists "${project}-${session_name}"; then
+            tmux_status="active"
+        else
+            tmux_status="no tmux"
+        fi
+
+        echo ""
+        echo "$key:"
+        echo "  Container: $container_name ($status)"
+        echo "  Tmux:      ${project}-${session_name} ($tmux_status)"
+
+        # Show ports
+        local ports_json
+        ports_json=$(session_get_field "$key" "ports")
+        if [ -n "$ports_json" ] && [ "$ports_json" != "null" ]; then
+            while IFS= read -r line; do
+                local pname="${line%%=*}"
+                local pnum="${line#*=}"
+                echo "  ${pname}: http://localhost:${pnum}"
+            done < <(echo "$ports_json" | jq -r 'to_entries[] | "\(.key)=\(.value)"')
+        fi
+
+        # Show PR info if present
+        local pr_number
+        pr_number=$(session_get_field "$key" "pr.number")
+        if [ -n "$pr_number" ]; then
+            local pr_title pr_url
+            pr_title=$(session_get_field "$key" "pr.title")
+            pr_url=$(session_get_field "$key" "pr.url")
+            echo "  PR:        #$pr_number - $pr_title"
+            echo "  URL:       $pr_url"
+        fi
+
+        echo "  Attach:    orca attach $session_name"
+    done
+
+    echo ""
+    echo "===================="
+}
+
+cmd_init() {
+    if [ -f "orchestrator.yml" ]; then
+        echo "orchestrator.yml already exists in this directory"
+        exit 1
+    fi
+
+    local project_name
+    project_name=$(basename "$PWD")
+
+    echo "Creating orchestrator.yml for: $project_name"
+    echo ""
+
+    # Detect project type
+    local has_python=false has_node=false has_django=false has_svelte=false
+    local has_react=false has_next=false has_docker=false
+
+    [ -f "requirements.txt" ] || [ -f "setup.py" ] || [ -f "pyproject.toml" ] && has_python=true
+    [ -f "package.json" ] && has_node=true
+    [ -f "manage.py" ] && has_django=true
+    [ -f "backend/manage.py" ] && has_django=true
+    [ -f "svelte.config.js" ] || [ -f "frontend/svelte.config.js" ] && has_svelte=true
+    [ -f "next.config.js" ] || [ -f "next.config.mjs" ] && has_react=true
+    [ -f "docker-compose.yml" ] || [ -f "docker-compose.yaml" ] && has_docker=true
+
+    echo "Detected:"
+    $has_python && echo "  - Python"
+    $has_django && echo "  - Django"
+    $has_node && echo "  - Node.js"
+    $has_svelte && echo "  - Svelte"
+    $has_react && echo "  - Next.js/React"
+    $has_docker && echo "  - Docker Compose"
+
+    # Ask for base branch
+    local default_branch
+    default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main")
+    read -p "Base branch [$default_branch]: " base_branch
+    base_branch=${base_branch:-$default_branch}
+
+    # Generate config
+    local config="project: $project_name\nbase_branch: $base_branch\n\nworktree:\n  enabled: true\n\nsetup:\n  copy:"
+
+    # Add common copy files
+    if [ -f ".env" ]; then config+="\n    - .env"; fi
+    if [ -f "backend/.env" ]; then config+="\n    - backend/.env"; fi
+    if [ -f "frontend/.env" ]; then config+="\n    - frontend/.env"; fi
+    if [ -d ".claude" ]; then config+="\n    - .claude/settings.local.json"; fi
+
+    config+="\n\ndocker:"
+
+    # Python requirements
+    if $has_python; then
+        if [ -f "requirements.txt" ]; then
+            config+="\n  python_requirements: requirements.txt"
+        elif [ -f "backend/requirements.txt" ]; then
+            config+="\n  python_requirements: backend/requirements.txt"
+        fi
+    fi
+
+    # Node install dirs
+    if $has_node; then
+        if [ -f "frontend/package.json" ]; then
+            config+="\n  node_install: [frontend]"
+            config+="\n  volumes:"
+            config+="\n    node_modules: /workspace/frontend/node_modules"
+        elif [ -f "package.json" ]; then
+            config+="\n  node_install: [.]"
+            config+="\n  volumes:"
+            config+="\n    node_modules: /workspace/node_modules"
+        fi
+    fi
+
+    config+="\n\nports:"
+
+    # Ports based on detected stack
+    local backend_port=8000
+    local frontend_port=5000
+
+    if $has_django; then
+        config+="\n  backend: { start: $backend_port }"
+    elif $has_python; then
+        config+="\n  backend: { start: $backend_port }"
+    fi
+
+    if $has_svelte || $has_react || $has_next; then
+        config+="\n  frontend: { start: $frontend_port }"
+    elif $has_node && ! $has_django; then
+        config+="\n  app: { start: 3000 }"
+    fi
+
+    config+="\n\nwindows:"
+
+    # Backend window
+    if $has_django; then
+        if [ -f "backend/manage.py" ]; then
+            config+="\n  - name: \"backend:\${backend_port}\""
+            config+="\n    directory: backend"
+            config+="\n    command: \"python manage.py runserver 0.0.0.0:\${backend_port}\""
+        else
+            config+="\n  - name: \"backend:\${backend_port}\""
+            config+="\n    directory: ."
+            config+="\n    command: \"python manage.py runserver 0.0.0.0:\${backend_port}\""
+        fi
+    fi
+
+    # Frontend window
+    if $has_svelte; then
+        local fe_dir="."
+        [ -d "frontend" ] && fe_dir="frontend"
+        config+="\n  - name: \"frontend:\${frontend_port}\""
+        config+="\n    directory: $fe_dir"
+        config+="\n    command: \"npm run dev -- --port \${frontend_port} --host 0.0.0.0\""
+    elif $has_react || $has_next; then
+        config+="\n  - name: \"frontend:\${frontend_port}\""
+        config+="\n    directory: ."
+        config+="\n    command: \"npm run dev -- --port \${frontend_port} --hostname 0.0.0.0\""
+    elif $has_node && ! $has_django; then
+        config+="\n  - name: \"app:\${app_port}\""
+        config+="\n    directory: ."
+        config+="\n    command: \"npm run dev -- --port \${app_port} --host 0.0.0.0\""
+    fi
+
+    # Claude window
+    config+="\n  - name: claude"
+    config+="\n    directory: ."
+    config+="\n    command: \"claude \${project}-\${session}\""
+    config+="\n    resume_command: \"claude \${project}-\${session} --resume\""
+
+    # Shell window
+    config+="\n  - name: shell"
+    config+="\n    directory: ."
+    config+="\n    command: \"\""
+
+    # CLI window
+    config+="\n  - name: cli"
+    config+="\n    directory: ."
+    config+="\n    command: \"\""
+
+    config+="\n\nenv:"
+    config+="\n  - ANTHROPIC_API_KEY"
+
+    # Write config
+    echo -e "$config" > orchestrator.yml
+
+    echo ""
+    echo "Created orchestrator.yml"
+    echo "Review and customize it, then run: orca add <session-name>"
+}
+
+# ─── Help ───────────────────────────────────────────────────────────────────
+
+show_help() {
+    cat << 'EOF'
+orca — Docker-isolated development session orchestrator
+
+Usage: orca <command> [args]
+
+Commands:
+  build                Build/rebuild the base Docker image
+  add <name>           Create session (worktree + container + tmux)
+  pr <number>          Create session from a GitHub PR
+  update-pr <number>   Update PR session with latest changes
+  attach <name>        Attach to session's tmux
+  stop <name>          Stop container (preserves worktree + volumes)
+  resume [name]        Restart stopped session(s)
+  remove <name>        Remove everything (container, volumes, worktree, branch)
+  list                 List all active sessions
+  init                 Create orchestrator.yml for current project
+
+Examples:
+  orca build                      # Build the base image (first time)
+  cd ~/Dev/myproject
+  orca init                       # Generate orchestrator.yml
+  orca add feature-auth           # Create isolated session
+  orca attach feature-auth        # Attach to tmux
+  orca pr 42                      # Create session from PR #42
+  orca list                       # Show all sessions
+  orca stop feature-auth          # Stop (preserves state)
+  orca resume feature-auth        # Resume stopped session
+  orca remove feature-auth        # Clean up everything
+
+https://github.com/rasca/orca
+EOF
+}
+
+# ─── Main ───────────────────────────────────────────────────────────────────
+
+case "${1:-}" in
+    build)       cmd_build ;;
+    add)         cmd_add "$2" ;;
+    pr)          cmd_pr "$2" ;;
+    update-pr)   cmd_update_pr "$2" ;;
+    attach)      cmd_attach "$2" ;;
+    stop)        cmd_stop "$2" ;;
+    resume)      cmd_resume "$2" ;;
+    remove|rm)   cmd_remove "$2" ;;
+    list|ls)     cmd_list ;;
+    init)        cmd_init ;;
+    help|--help|-h|"")
+        show_help ;;
+    *)
+        echo "Unknown command: $1"
+        echo "Run 'orca help' for usage"
+        exit 1
+        ;;
+esac

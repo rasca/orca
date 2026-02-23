@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash($SHELL --version)",
+      "Bash(claude:*)",
+      "Bash(tmux:*)",
+      "Bash(gh api:*)"
+    ]
+  }
+}
