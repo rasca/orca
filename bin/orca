@@ -634,151 +634,126 @@ cmd_list() {
 
 cmd_init() {
     if [ -f "orchestrator.yml" ]; then
-        echo "orchestrator.yml already exists in this directory"
+        echo "Error: orchestrator.yml already exists in this directory"
+        echo "Delete it first if you want to regenerate."
+        exit 1
+    fi
+
+    # Check that claude is available
+    if ! command -v claude > /dev/null 2>&1; then
+        echo "Error: Claude Code is required for 'orca init'"
+        echo "Install it: npm install -g @anthropic-ai/claude-code"
         exit 1
     fi
 
     local project_name
     project_name=$(basename "$PWD")
 
-    echo "Creating orchestrator.yml for: $project_name"
-    echo ""
-
-    # Detect project type
-    local has_python=false has_node=false has_django=false has_svelte=false
-    local has_react=false has_next=false has_docker=false
-
-    [ -f "requirements.txt" ] || [ -f "setup.py" ] || [ -f "pyproject.toml" ] && has_python=true
-    [ -f "package.json" ] && has_node=true
-    [ -f "manage.py" ] && has_django=true
-    [ -f "backend/manage.py" ] && has_django=true
-    [ -f "svelte.config.js" ] || [ -f "frontend/svelte.config.js" ] && has_svelte=true
-    [ -f "next.config.js" ] || [ -f "next.config.mjs" ] && has_react=true
-    [ -f "docker-compose.yml" ] || [ -f "docker-compose.yaml" ] && has_docker=true
-
-    echo "Detected:"
-    $has_python && echo "  - Python"
-    $has_django && echo "  - Django"
-    $has_node && echo "  - Node.js"
-    $has_svelte && echo "  - Svelte"
-    $has_react && echo "  - Next.js/React"
-    $has_docker && echo "  - Docker Compose"
-
-    # Ask for base branch
     local default_branch
     default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || true)
     [ -z "$default_branch" ] && default_branch=$(git branch --show-current 2>/dev/null || echo "main")
-    read -p "Base branch [$default_branch]: " base_branch
-    base_branch=${base_branch:-$default_branch}
 
-    # Generate config
-    local config="project: $project_name\nbase_branch: $base_branch\n\nworktree:\n  enabled: true\n\nsetup:\n  copy:"
-
-    # Add common copy files
-    if [ -f ".env" ]; then config+="\n    - .env"; fi
-    if [ -f "backend/.env" ]; then config+="\n    - backend/.env"; fi
-    if [ -f "frontend/.env" ]; then config+="\n    - frontend/.env"; fi
-    if [ -d ".claude" ]; then config+="\n    - .claude/settings.local.json"; fi
-
-    config+="\n\ndocker:"
-
-    # Python requirements
-    if $has_python; then
-        if [ -f "requirements.txt" ]; then
-            config+="\n  python_requirements: requirements.txt"
-        elif [ -f "backend/requirements.txt" ]; then
-            config+="\n  python_requirements: backend/requirements.txt"
-        fi
-    fi
-
-    # Node install dirs
-    if $has_node; then
-        if [ -f "frontend/package.json" ]; then
-            config+="\n  node_install: [frontend]"
-            config+="\n  volumes:"
-            config+="\n    node_modules: /workspace/frontend/node_modules"
-        elif [ -f "package.json" ]; then
-            config+="\n  node_install: [.]"
-            config+="\n  volumes:"
-            config+="\n    node_modules: /workspace/node_modules"
-        fi
-    fi
-
-    config+="\n\nports:"
-
-    # Ports based on detected stack
-    local backend_port=8000
-    local frontend_port=5000
-
-    if $has_django; then
-        config+="\n  backend: { start: $backend_port }"
-    elif $has_python; then
-        config+="\n  backend: { start: $backend_port }"
-    fi
-
-    if $has_svelte || $has_react || $has_next; then
-        config+="\n  frontend: { start: $frontend_port }"
-    elif $has_node && ! $has_django; then
-        config+="\n  app: { start: 3000 }"
-    fi
-
-    config+="\n\nwindows:"
-
-    # Backend window
-    if $has_django; then
-        if [ -f "backend/manage.py" ]; then
-            config+="\n  - name: \"backend:\${backend_port}\""
-            config+="\n    directory: backend"
-            config+="\n    command: \"python manage.py runserver 0.0.0.0:\${backend_port}\""
-        else
-            config+="\n  - name: \"backend:\${backend_port}\""
-            config+="\n    directory: ."
-            config+="\n    command: \"python manage.py runserver 0.0.0.0:\${backend_port}\""
-        fi
-    fi
-
-    # Frontend window
-    if $has_svelte; then
-        local fe_dir="."
-        [ -d "frontend" ] && fe_dir="frontend"
-        config+="\n  - name: \"frontend:\${frontend_port}\""
-        config+="\n    directory: $fe_dir"
-        config+="\n    command: \"npm run dev -- --port \${frontend_port} --host 0.0.0.0\""
-    elif $has_react || $has_next; then
-        config+="\n  - name: \"frontend:\${frontend_port}\""
-        config+="\n    directory: ."
-        config+="\n    command: \"npm run dev -- --port \${frontend_port} --hostname 0.0.0.0\""
-    elif $has_node && ! $has_django; then
-        config+="\n  - name: \"app:\${app_port}\""
-        config+="\n    directory: ."
-        config+="\n    command: \"npm run dev -- --port \${app_port} --host 0.0.0.0\""
-    fi
-
-    # Claude window
-    config+="\n  - name: claude"
-    config+="\n    directory: ."
-    config+="\n    command: \"claude \${project}-\${session}\""
-    config+="\n    resume_command: \"claude \${project}-\${session} --resume\""
-
-    # Shell window
-    config+="\n  - name: shell"
-    config+="\n    directory: ."
-    config+="\n    command: \"\""
-
-    # CLI window
-    config+="\n  - name: cli"
-    config+="\n    directory: ."
-    config+="\n    command: \"\""
-
-    config+="\n\nenv:"
-    config+="\n  - ANTHROPIC_API_KEY"
-
-    # Write config
-    echo -e "$config" > orchestrator.yml
-
+    echo "Analyzing project '$project_name' with Claude Code..."
     echo ""
-    echo "Created orchestrator.yml"
-    echo "Review and customize it, then run: orca add <session-name>"
+
+    # Build the prompt with the spec inlined
+    local spec_file="$ORCA_ROOT/skills/orca/references/orchestrator-yml-spec.md"
+    local spec_content=""
+    if [ -f "$spec_file" ]; then
+        spec_content=$(cat "$spec_file")
+    fi
+
+    claude -p "$(cat <<PROMPT
+You are generating an orchestrator.yml config file for the orca development session orchestrator.
+
+## Project Info
+- Project name: $project_name
+- Project directory: $PWD
+- Base branch: $default_branch
+
+## Your Task
+
+Analyze this project thoroughly and generate a complete orchestrator.yml file. Write ONLY the file content to orchestrator.yml — no explanations, no markdown fences.
+
+### Analysis Steps
+
+1. **Explore the project structure**: Look at the directory layout, key config files, and understand the architecture.
+
+2. **Detect frameworks and tools**:
+   - Python: Django, Flask, FastAPI, Celery, etc.
+   - Node.js: React, Next.js, Svelte, Vue, Vite, Express, etc.
+   - Other: Go, Rust, Ruby on Rails, etc.
+   - Databases: SQLite, PostgreSQL, Redis, etc.
+   - Check package.json scripts, Makefile targets, docker-compose services
+
+3. **Identify what needs to run**: Look at existing scripts, docker-compose.yml services, Makefiles, package.json scripts to understand what processes the developer typically runs.
+
+4. **Generate smart windows**: IMPORTANT — go beyond just a server and a shell. Each window should serve a real development need. You MUST include framework-specific windows:
+
+   **Django projects** (MUST include ALL applicable):
+   - backend server: \`python manage.py runserver 0.0.0.0:\${backend_port}\`
+   - django-shell: \`python manage.py shell_plus --ipython\` (if django-extensions in requirements) or \`python manage.py shell\` (always for Django)
+   - celery worker: \`celery -A <appname> worker -l info\` (if celery is in requirements)
+   - celery-beat: \`celery -A <appname> beat -l info\` (if django-celery-beat is in requirements)
+
+   **Flask projects:**
+   - server: \`flask run --host 0.0.0.0 --port \${backend_port}\`
+
+   **FastAPI projects:**
+   - server: \`uvicorn <module>:app --host 0.0.0.0 --port \${backend_port} --reload\`
+
+   **Svelte/Vite projects:**
+   - dev server: \`npm run dev -- --port \${frontend_port} --host 0.0.0.0\`
+
+   **React/Next.js projects:**
+   - dev server: \`npm run dev -- --port \${frontend_port} --hostname 0.0.0.0\`
+
+   **Vue/Nuxt projects:**
+   - dev server: \`npm run dev -- --port \${frontend_port} --host 0.0.0.0\`
+
+   **Projects with workers/queues** (docker-compose services, Procfile):
+   - Add a window for each background worker/service
+
+   **All projects MUST include these 3 windows:**
+   - claude: \`claude \${project}-\${session}\` with resume_command \`claude \${project}-\${session} --resume\`
+   - shell: empty command (interactive shell for ad-hoc work)
+   - cli: empty command (for one-off commands)
+
+5. **Setup files**: Identify .env files, databases (db.sqlite3), Claude settings that should be copied to worktrees.
+
+6. **Env substitutions**: If frontend .env has an API URL variable, set it to use \${backend_port}.
+
+7. **Docker volumes**: Add named volumes for node_modules directories to avoid macOS bind mount slowness.
+
+### Critical Rules for the YAML
+
+- Servers MUST bind to 0.0.0.0 (not localhost) for Docker port forwarding
+- Use \${project}, \${session}, \${port_name_port} variable interpolation
+- Port names become variables as \${name_port} (e.g., ports.backend -> \${backend_port})
+- Windows with empty command ("") get an interactive shell
+- The claude window MUST have both command and resume_command
+- env section should include ANTHROPIC_API_KEY
+
+### orchestrator.yml Specification
+
+$spec_content
+
+## Output
+
+Write the orchestrator.yml file directly. Do NOT wrap it in markdown code fences. Just write the raw YAML content to the file.
+PROMPT
+)" --allowedTools "Read,Glob,Grep,Write" 2>&1
+
+    if [ -f "orchestrator.yml" ]; then
+        echo ""
+        echo "Created orchestrator.yml"
+        echo "Review it, then run: orca add <session-name>"
+    else
+        echo ""
+        echo "Error: Claude Code did not generate orchestrator.yml"
+        echo "Try running manually: claude -p 'Generate an orchestrator.yml for this project'"
+        exit 1
+    fi
 }
 
 # ─── Help ───────────────────────────────────────────────────────────────────
