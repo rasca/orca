@@ -11,14 +11,18 @@ create_worktree() {
     echo "Checking if branch is up to date..."
     cd "$project_root"
 
-    # Fetch latest changes
-    git fetch origin "$base_branch" 2>/dev/null
+    # Fetch latest changes (skip if no remote)
+    local has_remote=false
+    if git remote get-url origin > /dev/null 2>&1; then
+        has_remote=true
+        git fetch origin "$base_branch" 2>/dev/null || true
+    fi
 
     local local_rev remote_rev
     local_rev=$(git rev-parse "$base_branch" 2>/dev/null)
-    remote_rev=$(git rev-parse "origin/$base_branch" 2>/dev/null)
+    remote_rev=$(git rev-parse "origin/$base_branch" 2>/dev/null || true)
 
-    if [ "$local_rev" != "$remote_rev" ] && [ -n "$remote_rev" ]; then
+    if [ "$has_remote" = true ] && [ "$local_rev" != "$remote_rev" ] && [ -n "$remote_rev" ]; then
         echo ""
         echo "Warning: Local $base_branch is not up to date with origin/$base_branch"
         echo "Local:  $(git log --oneline -1 "$base_branch")"
@@ -152,7 +156,7 @@ apply_env_substitutions() {
 
     # Get list of files that have substitutions
     local sub_files
-    sub_files=$(yq eval '.setup.env_substitutions | keys | .[]' "$config_file" 2>/dev/null)
+    sub_files=$(yq eval '.setup.env_substitutions | keys | .[]' "$config_file" 2>/dev/null) || true
 
     for target_file in $sub_files; do
         if [ -n "$target_file" ] && [ "$target_file" != "null" ]; then

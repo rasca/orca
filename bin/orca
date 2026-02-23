@@ -4,7 +4,15 @@ set -e
 # orca — Docker-isolated development session orchestrator
 # https://github.com/rasca/orca
 
-ORCA_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Resolve symlinks to find the real install directory
+ORCA_SCRIPT="${BASH_SOURCE[0]}"
+while [ -L "$ORCA_SCRIPT" ]; do
+    ORCA_DIR="$(cd "$(dirname "$ORCA_SCRIPT")" && pwd)"
+    ORCA_SCRIPT="$(readlink "$ORCA_SCRIPT")"
+    # Handle relative symlinks
+    [[ "$ORCA_SCRIPT" != /* ]] && ORCA_SCRIPT="$ORCA_DIR/$ORCA_SCRIPT"
+done
+ORCA_ROOT="$(cd "$(dirname "$ORCA_SCRIPT")/.." && pwd)"
 
 # Source all library modules
 source "$ORCA_ROOT/lib/config.sh"
@@ -549,10 +557,10 @@ cmd_remove() {
 
 cmd_list() {
     local config_file project_filter
-    config_file=$(find_config 2>/dev/null)
+    config_file=$(find_config 2>/dev/null) || true
 
     if [ -n "$config_file" ]; then
-        load_config "$config_file" 2>/dev/null
+        load_config "$config_file" 2>/dev/null || true
         project_filter="$CFG_PROJECT"
     fi
 
@@ -658,7 +666,8 @@ cmd_init() {
 
     # Ask for base branch
     local default_branch
-    default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo "main")
+    default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || true)
+    [ -z "$default_branch" ] && default_branch=$(git branch --show-current 2>/dev/null || echo "main")
     read -p "Base branch [$default_branch]: " base_branch
     base_branch=${base_branch:-$default_branch}
 
