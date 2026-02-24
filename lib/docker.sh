@@ -161,6 +161,16 @@ docker_run_setup() {
     local container_name="$1"
     local config_file="$2"
 
+    # Fix ownership of named volume mounts (Docker creates them as root)
+    local volumes
+    volumes=$(get_docker_volumes "$config_file")
+    for vol in $volumes; do
+        if [ -n "$vol" ] && [ "$vol" != "null" ]; then
+            local vol_path="${vol#*=}"
+            docker exec "$container_name" sudo chown "$(id -u):$(id -g)" "$vol_path" 2>/dev/null || true
+        fi
+    done
+
     # Python requirements
     local py_req
     py_req=$(get_python_requirements "$config_file")
