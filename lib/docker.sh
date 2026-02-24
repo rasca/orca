@@ -49,8 +49,8 @@ docker_start_container() {
     [ -f "$HOME/.gitconfig" ] && docker_args+=(-v "$HOME/.gitconfig:/home/$(whoami)/.gitconfig:ro")
     [ -d "$HOME/.ssh" ] && docker_args+=(-v "$HOME/.ssh:/home/$(whoami)/.ssh:ro")
     [ -d "$HOME/.config/gh" ] && docker_args+=(-v "$HOME/.config/gh:/home/$(whoami)/.config/gh:ro")
-    [ -d "$HOME/.claude" ] && docker_args+=(-v "$HOME/.claude:/home/$(whoami)/.claude")
-    [ -f "$HOME/.claude.json" ] && docker_args+=(-v "$HOME/.claude.json:/home/$(whoami)/.claude.json")
+    # Claude Code config: copied into container after start (not bind-mounted
+    # to avoid read-only errors and corruption from concurrent writes)
 
     # Claude Code OAuth token (from `claude setup-token`)
     [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] && docker_args+=(-e "CLAUDE_CODE_OAUTH_TOKEN")
@@ -165,6 +165,17 @@ docker_status() {
 docker_run_setup() {
     local container_name="$1"
     local config_file="$2"
+
+    # Copy Claude Code config into the container (not bind-mounted to avoid
+    # read-only errors in ~/.claude/ and corruption from concurrent writes)
+    local claude_home="/home/$(whoami)"
+    if [ -f "$HOME/.claude.json" ]; then
+        docker cp "$HOME/.claude.json" "$container_name:$claude_home/.claude.json"
+    fi
+    if [ -f "$HOME/.claude/settings.json" ]; then
+        docker exec "$container_name" mkdir -p "$claude_home/.claude" 2>/dev/null || true
+        docker cp "$HOME/.claude/settings.json" "$container_name:$claude_home/.claude/settings.json"
+    fi
 
     # Fix ownership of named volume mounts (Docker creates them as root)
     local volumes
