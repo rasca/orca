@@ -1,0 +1,16 @@
+project: simple-app
+base_branch: main
+
+worktree:
+  enabled: false
+
+ports:
+  backend: { start: 8000 }
+
+windows:
+  - name: "server:${backend_port}"
+    directory: .
+    command: "python -m http.server ${backend_port}"
+  - name: shell
+    directory: .
+    command: ""

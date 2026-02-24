@@ -1,0 +1,48 @@
+project: mydjango
+base_branch: main
+
+worktree:
+  enabled: true
+
+setup:
+  copy:
+    - backend/.env
+    - frontend/.env
+    - .claude/settings.local.json
+  env_substitutions:
+    "frontend/.env":
+      VITE_API_URL: "http://localhost:${backend_port}"
+
+docker:
+  python_requirements: backend/requirements.txt
+  node_install: [frontend]
+  volumes:
+    node_modules: /workspace/frontend/node_modules
+
+ports:
+  backend: { start: 8000 }
+  frontend: { start: 5173 }
+
+windows:
+  - name: "backend:${backend_port}"
+    directory: backend
+    command: "python manage.py runserver 0.0.0.0:${backend_port}"
+  - name: "frontend:${frontend_port}"
+    directory: frontend
+    command: "npm run dev -- --port ${frontend_port} --host 0.0.0.0"
+  - name: django-shell
+    directory: backend
+    command: "python manage.py shell"
+  - name: claude
+    directory: .
+    command: "claude ${project}-${session}"
+    resume_command: "claude ${project}-${session} --resume"
+  - name: shell
+    directory: .
+    command: ""
+  - name: cli
+    directory: .
+    command: ""
+
+env:
+  - ANTHROPIC_API_KEY

@@ -132,6 +132,9 @@ fi
 
 echo ""
 
+# Create state directory
+mkdir -p "$HOME/.orca"
+
 # Make executable
 chmod +x "$ORCA_DIR/bin/orca"
 

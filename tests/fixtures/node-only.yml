@@ -1,0 +1,28 @@
+project: node-app
+base_branch: develop
+
+worktree:
+  enabled: true
+
+docker:
+  node_install: [.]
+  volumes:
+    node_modules: /workspace/node_modules
+
+ports:
+  frontend: { start: 3000 }
+
+windows:
+  - name: "dev:${frontend_port}"
+    directory: .
+    command: "npm run dev -- --port ${frontend_port} --host 0.0.0.0"
+  - name: claude
+    directory: .
+    command: "claude ${project}-${session}"
+    resume_command: "claude ${project}-${session} --resume"
+  - name: shell
+    directory: .
+    command: ""
+
+env:
+  - ANTHROPIC_API_KEY

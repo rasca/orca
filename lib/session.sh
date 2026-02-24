@@ -1,12 +1,19 @@
 #!/bin/bash
 # session.sh — Session state CRUD using sessions.json
 
-ORCA_STATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/state"
+ORCA_STATE_DIR="${ORCA_STATE_DIR:-$HOME/.orca}"
 SESSIONS_FILE="$ORCA_STATE_DIR/sessions.json"
 
 # Ensure state directory and sessions file exist
 init_sessions() {
     mkdir -p "$ORCA_STATE_DIR"
+    # Migrate from old install-relative location
+    local old_state
+    old_state="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/state/sessions.json"
+    if [ -f "$old_state" ] && [ ! -f "$SESSIONS_FILE" ]; then
+        cp "$old_state" "$SESSIONS_FILE"
+        echo "Migrated sessions.json to $ORCA_STATE_DIR/" >&2
+    fi
     if [ ! -f "$SESSIONS_FILE" ]; then
         echo "{}" > "$SESSIONS_FILE"
     fi
