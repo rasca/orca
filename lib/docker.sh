@@ -50,6 +50,7 @@ docker_start_container() {
     [ -d "$HOME/.ssh" ] && docker_args+=(-v "$HOME/.ssh:/home/$(whoami)/.ssh:ro")
     [ -d "$HOME/.config/gh" ] && docker_args+=(-v "$HOME/.config/gh:/home/$(whoami)/.config/gh:ro")
     [ -d "$HOME/.claude" ] && docker_args+=(-v "$HOME/.claude:/home/$(whoami)/.claude")
+    [ -f "$HOME/.claude.json" ] && docker_args+=(-v "$HOME/.claude.json:/home/$(whoami)/.claude.json")
 
     # SSH agent forwarding (macOS Docker Desktop)
     if [ -S "/run/host-services/ssh-auth.sock" ] 2>/dev/null || true; then
