@@ -52,6 +52,9 @@ docker_start_container() {
     [ -d "$HOME/.claude" ] && docker_args+=(-v "$HOME/.claude:/home/$(whoami)/.claude")
     [ -f "$HOME/.claude.json" ] && docker_args+=(-v "$HOME/.claude.json:/home/$(whoami)/.claude.json")
 
+    # Claude Code OAuth token (from `claude setup-token`)
+    [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] && docker_args+=(-e "CLAUDE_CODE_OAUTH_TOKEN")
+
     # SSH agent forwarding (macOS Docker Desktop)
     if [ -S "/run/host-services/ssh-auth.sock" ] 2>/dev/null || true; then
         docker_args+=(--mount "type=bind,src=/run/host-services/ssh-auth.sock,target=/run/host-services/ssh-auth.sock")
