@@ -50,6 +50,44 @@ teardown() {
     echo "$result" | grep -q "backend_port=8003"
 }
 
+@test "allocate_ports skips ports in use on the host" {
+    init_sessions
+    # Override lsof mock to report port 8000 as in use
+    cat > "$MOCK_BIN/lsof" << 'MOCK'
+#!/bin/bash
+# Simulate port 8000 being in use by another process
+for arg in "$@"; do
+    if [[ "$arg" == *":8000" ]]; then
+        exit 0
+    fi
+done
+exit 1
+MOCK
+    chmod +x "$MOCK_BIN/lsof"
+
+    result=$(allocate_ports "$FIXTURE_DIR/simple.yml")
+    echo "$result" | grep -q "backend_port=8001"
+}
+
+@test "allocate_ports skips ports used in sessions AND on host" {
+    # Port 8000 used in sessions, port 8001 used on host
+    session_save "a/s1" '{"project":"a","ports":{"backend":8000}}'
+
+    cat > "$MOCK_BIN/lsof" << 'MOCK'
+#!/bin/bash
+for arg in "$@"; do
+    if [[ "$arg" == *":8001" ]]; then
+        exit 0
+    fi
+done
+exit 1
+MOCK
+    chmod +x "$MOCK_BIN/lsof"
+
+    result=$(allocate_ports "$FIXTURE_DIR/simple.yml")
+    echo "$result" | grep -q "backend_port=8002"
+}
+
 # ─── ports_to_json ──────────────────────────────────────────────────────────
 
 @test "ports_to_json builds correct JSON for single port" {

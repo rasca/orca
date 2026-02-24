@@ -10,6 +10,12 @@ get_used_ports() {
     jq -r ".[].ports.${port_name} // empty" "$SESSIONS_FILE" 2>/dev/null | sort -n
 }
 
+# Check if a port is in use on the host (by any process)
+port_in_use() {
+    local port="$1"
+    lsof -iTCP:"$port" -sTCP:LISTEN -P -n > /dev/null 2>&1
+}
+
 # Allocate ports for a session based on config
 # Outputs key=value pairs: backend_port=8000 frontend_port=5000
 allocate_ports() {
@@ -25,7 +31,7 @@ allocate_ports() {
         used=$(get_used_ports "$port_name")
 
         local port=$start
-        while echo "$used" | grep -q "^${port}$"; do
+        while echo "$used" | grep -q "^${port}$" || port_in_use "$port"; do
             port=$((port + 1))
         done
 

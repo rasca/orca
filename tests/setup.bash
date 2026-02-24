@@ -14,6 +14,17 @@ setup() {
     export HOME="$TEST_DIR/home"
     mkdir -p "$HOME"
 
+    # Mock lsof so port_in_use always returns false in tests
+    # Individual tests can override this by prepending to PATH
+    MOCK_BIN="$TEST_DIR/mock-bin"
+    mkdir -p "$MOCK_BIN"
+    cat > "$MOCK_BIN/lsof" << 'MOCK'
+#!/bin/bash
+exit 1
+MOCK
+    chmod +x "$MOCK_BIN/lsof"
+    export PATH="$MOCK_BIN:$PATH"
+
     # Source lib files (order matters: config first, then session, then ports)
     source "$ORCA_ROOT/lib/config.sh"
     source "$ORCA_ROOT/lib/session.sh"
