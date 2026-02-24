@@ -32,13 +32,13 @@ teardown() {
     echo "$result" | grep -q "backend_port=8001"
 }
 
-@test "allocate_ports handles multiple port names independently" {
-    # Backend 8000 used, frontend 5173 free
+@test "allocate_ports uses shared offset across port names" {
+    # Backend 8000 used — both ports should bump to offset 1
     session_save "existing/s1" '{"project":"existing","ports":{"backend":8000}}'
 
     result=$(allocate_ports "$FIXTURE_DIR/django.yml")
     echo "$result" | grep -q "backend_port=8001"
-    echo "$result" | grep -q "frontend_port=5173"
+    echo "$result" | grep -q "frontend_port=5174"
 }
 
 @test "allocate_ports skips multiple used ports" {
@@ -86,6 +86,26 @@ MOCK
 
     result=$(allocate_ports "$FIXTURE_DIR/simple.yml")
     echo "$result" | grep -q "backend_port=8002"
+}
+
+@test "allocate_ports shared offset skips when any port is blocked" {
+    # Frontend 5173 is in use on host — offset 0 blocked, both bump to offset 1
+    init_sessions
+
+    cat > "$MOCK_BIN/lsof" << 'MOCK'
+#!/bin/bash
+for arg in "$@"; do
+    if [[ "$arg" == *":5173" ]]; then
+        exit 0
+    fi
+done
+exit 1
+MOCK
+    chmod +x "$MOCK_BIN/lsof"
+
+    result=$(allocate_ports "$FIXTURE_DIR/django.yml")
+    echo "$result" | grep -q "backend_port=8001"
+    echo "$result" | grep -q "frontend_port=5174"
 }
 
 # ─── ports_to_json ──────────────────────────────────────────────────────────

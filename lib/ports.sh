@@ -17,25 +17,44 @@ port_in_use() {
 }
 
 # Allocate ports for a session based on config
-# Outputs key=value pairs: backend_port=8000 frontend_port=5000
+# Uses a shared offset so all ports increment together:
+#   offset 0 → backend=8000, frontend=5000
+#   offset 1 → backend=8001, frontend=5001
 allocate_ports() {
     local config_file="$1"
     local port_names
     port_names=$(get_port_names "$config_file")
 
+    # Collect start ports and used ports for each name
+    local names=()
+    local starts=()
+    local used_lists=()
+
     for port_name in $port_names; do
-        local start
-        start=$(get_port_start "$config_file" "$port_name")
+        names+=("$port_name")
+        starts+=("$(get_port_start "$config_file" "$port_name")")
+        used_lists+=("$(get_used_ports "$port_name")")
+    done
 
-        local used
-        used=$(get_used_ports "$port_name")
-
-        local port=$start
-        while echo "$used" | grep -q "^${port}$" || port_in_use "$port"; do
-            port=$((port + 1))
+    # Find smallest offset where ALL ports are free
+    local offset=0
+    while true; do
+        local all_free=true
+        for i in "${!names[@]}"; do
+            local port=$((starts[i] + offset))
+            if echo "${used_lists[$i]}" | grep -q "^${port}$" || port_in_use "$port"; then
+                all_free=false
+                break
+            fi
         done
+        if [ "$all_free" = true ]; then
+            break
+        fi
+        offset=$((offset + 1))
+    done
 
-        echo "${port_name}_port=$port"
+    for i in "${!names[@]}"; do
+        echo "${names[$i]}_port=$((starts[i] + offset))"
     done
 }
 
