@@ -33,10 +33,19 @@ create_worktree() {
 
         if [ "$pull_choice" = "y" ] || [ "$pull_choice" = "Y" ]; then
             echo "Pulling latest changes..."
-            git pull origin "$base_branch" || {
-                echo "Error: Failed to pull. Resolve conflicts and try again." >&2
-                return 1
-            }
+            local current_branch
+            current_branch=$(git branch --show-current)
+            if [ "$current_branch" = "$base_branch" ]; then
+                git merge --ff-only "origin/$base_branch" || {
+                    echo "Error: Cannot fast-forward $base_branch. Resolve manually." >&2
+                    return 1
+                }
+            else
+                git branch -f "$base_branch" "origin/$base_branch" || {
+                    echo "Error: Failed to update $base_branch. Resolve manually." >&2
+                    return 1
+                }
+            fi
         else
             read -p "Continue with outdated branch? (y/n) [n]: " cont_choice
             cont_choice=${cont_choice:-n}

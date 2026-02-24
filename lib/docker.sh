@@ -30,11 +30,12 @@ docker_build() {
 }
 
 # Start a container for a session
-# Args: container_name workspace_path port_pairs... -- env_vars... -- volume_pairs...
+# Args: container_name workspace_path project_root port_pairs... -- env_vars... -- volume_pairs...
 docker_start_container() {
     local container_name="$1"
     local workspace_path="$2"
-    shift 2
+    local project_root="$3"
+    shift 3
 
     local docker_args=()
     docker_args+=(run -d)
@@ -45,10 +46,17 @@ docker_start_container() {
     # Workspace bind mount
     docker_args+=(-v "$workspace_path:/workspace")
 
+    # Mount main repo .git so worktree git operations work inside container
+    if [ -n "$project_root" ] && [ "$workspace_path" != "$project_root" ]; then
+        docker_args+=(-v "$project_root/.git:$project_root/.git")
+    fi
+
     # Host config mounts (read-only)
     [ -f "$HOME/.gitconfig" ] && docker_args+=(-v "$HOME/.gitconfig:/home/$(whoami)/.gitconfig:ro")
     [ -d "$HOME/.ssh" ] && docker_args+=(-v "$HOME/.ssh:/home/$(whoami)/.ssh:ro")
-    [ -d "$HOME/.config/gh" ] && docker_args+=(-v "$HOME/.config/gh:/home/$(whoami)/.config/gh:ro")
+    # gh CLI config: copied into container after start (not bind-mounted because
+    # macOS stores tokens in Keychain, making the config file useless read-only)
+
     # Claude Code config: copied into container after start (not bind-mounted
     # to avoid read-only errors and corruption from concurrent writes)
 
@@ -175,6 +183,18 @@ docker_run_setup() {
     if [ -f "$HOME/.claude/settings.json" ]; then
         docker exec "$container_name" mkdir -p "$claude_home/.claude" 2>/dev/null || true
         docker cp "$HOME/.claude/settings.json" "$container_name:$claude_home/.claude/settings.json"
+    fi
+
+    # Set up gh CLI auth (macOS stores tokens in Keychain, so bind-mounting
+    # the config doesn't work — extract the real token and inject it)
+    if command -v gh &>/dev/null; then
+        local gh_token
+        gh_token=$(gh auth token 2>/dev/null) || true
+        if [ -n "$gh_token" ]; then
+            echo "Setting up GitHub CLI auth..."
+            docker exec -e _GH_AUTH_TOKEN="$gh_token" "$container_name" \
+                bash -c 'echo "$_GH_AUTH_TOKEN" | gh auth login --with-token && gh auth setup-git' 2>/dev/null || true
+        fi
     fi
 
     # Fix ownership of named volume mounts (Docker creates them as root)

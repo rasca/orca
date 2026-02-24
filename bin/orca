@@ -115,7 +115,7 @@ cmd_add() {
     done
 
     # Start container
-    docker_start_container "$container_name" "$workspace_path" "${docker_args[@]}"
+    docker_start_container "$container_name" "$workspace_path" "$project_root" "${docker_args[@]}"
 
     # Wait for container to be ready
     sleep 1
@@ -259,7 +259,7 @@ cmd_pr() {
     done
 
     # Start container
-    docker_start_container "$container_name" "$workspace_path" "${docker_args[@]}"
+    docker_start_container "$container_name" "$workspace_path" "$project_root" "${docker_args[@]}"
     sleep 1
     docker_run_setup "$container_name" "$config_file"
 
@@ -715,7 +715,7 @@ Analyze this project thoroughly and generate a complete orchestrator.yml file. W
    - Add a window for each background worker/service
 
    **All projects MUST include these 3 windows:**
-   - claude: \`claude \${project}-\${session}\` with resume_command \`claude \${project}-\${session} --resume\`
+   - claude: \`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 claude --dangerously-skip-permissions\` with resume_command \`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 claude --dangerously-skip-permissions --resume\`
    - shell: empty command (interactive shell for ad-hoc work)
    - cli: empty command (for one-off commands)
 

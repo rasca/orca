@@ -34,7 +34,7 @@ config_get() {
 config_get_array() {
     local config_file="$1"
     local path="$2"
-    yq eval "$path | .[]" "$config_file" 2>/dev/null
+    yq eval "($path // []) | .[]" "$config_file" 2>/dev/null || true
 }
 
 # Count array items
@@ -124,7 +124,7 @@ get_env_vars() {
 # Get docker volume definitions
 get_docker_volumes() {
     local config_file="$1"
-    yq eval '.docker.volumes | to_entries | .[] | .key + "=" + .value' "$config_file" 2>/dev/null
+    yq eval '(.docker.volumes // {}) | to_entries | .[] | .key + "=" + .value' "$config_file" 2>/dev/null || true
 }
 
 # Get python requirements file path
@@ -132,7 +132,9 @@ get_python_requirements() {
     local config_file="$1"
     local val
     val=$(config_get "$config_file" '.docker.python_requirements // ""')
-    [ "$val" != "null" ] && [ -n "$val" ] && echo "$val"
+    if [ "$val" != "null" ] && [ -n "$val" ]; then
+        echo "$val"
+    fi
 }
 
 # Get node install directories

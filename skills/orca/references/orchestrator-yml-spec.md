@@ -139,8 +139,8 @@ windows:
     command: "npm run dev -- --port ${frontend_port} --host 0.0.0.0"
   - name: claude
     directory: .
-    command: "claude ${project}-${session}"
-    resume_command: "claude ${project}-${session} --resume"
+    command: "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 claude --dangerously-skip-permissions"
+    resume_command: "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 claude --dangerously-skip-permissions --resume"
   - name: shell
     directory: .
     command: ""
