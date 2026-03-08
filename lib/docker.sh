@@ -56,7 +56,7 @@ docker_start_container() {
     [ -d "$HOME/.ssh" ] && docker_args+=(-v "$HOME/.ssh:/home/$(whoami)/.ssh:ro")
 
     # macOS temp files and Desktop (for screenshots/image previews from clipboard)
-    [ -d "/var/folders" ] && docker_args+=(-v "/var/folders:/var/folders:ro")
+    [ -d "/private/var/folders" ] && docker_args+=(-v "/private/var/folders:/var/folders:ro")
     [ -d "$HOME/Desktop" ] && docker_args+=(-v "$HOME/Desktop:$HOME/Desktop:ro")
     # gh CLI config: copied into container after start (not bind-mounted because
     # macOS stores tokens in Keychain, making the config file useless read-only)
