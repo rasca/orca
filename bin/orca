@@ -22,6 +22,58 @@ source "$ORCA_ROOT/lib/docker.sh"
 source "$ORCA_ROOT/lib/tmux.sh"
 source "$ORCA_ROOT/lib/git.sh"
 
+# ─── Helpers ────────────────────────────────────────────────────────────────
+
+# Suggest a close session name match using Levenshtein-like heuristic
+# Usage: suggest_session "typo" "project"
+# Prints "Did you mean 'correct'?" if a close match is found
+suggest_session() {
+    local input="$1"
+    local project="$2"
+    local keys
+    keys=$(session_keys_for_project "$project") || true
+
+    if [ -z "$keys" ]; then
+        return
+    fi
+
+    local best_match=""
+    local best_score=999
+
+    for key in $keys; do
+        local name
+        name=$(echo "$key" | cut -d/ -f2)
+
+        # Calculate a simple edit distance approximation
+        # Use awk to compute character-level Levenshtein distance
+        local dist
+        dist=$(awk -v s1="$input" -v s2="$name" 'BEGIN {
+            l1 = length(s1); l2 = length(s2)
+            for (i = 0; i <= l1; i++) d[i,0] = i
+            for (j = 0; j <= l2; j++) d[0,j] = j
+            for (i = 1; i <= l1; i++) {
+                for (j = 1; j <= l2; j++) {
+                    cost = (substr(s1,i,1) != substr(s2,j,1)) ? 1 : 0
+                    d[i,j] = d[i-1,j] + 1
+                    if (d[i,j-1] + 1 < d[i,j]) d[i,j] = d[i,j-1] + 1
+                    if (d[i-1,j-1] + cost < d[i,j]) d[i,j] = d[i-1,j-1] + cost
+                }
+            }
+            print d[l1,l2]
+        }')
+
+        if [ "$dist" -lt "$best_score" ]; then
+            best_score="$dist"
+            best_match="$name"
+        fi
+    done
+
+    # Suggest if edit distance is at most 3 (reasonable for typos)
+    if [ "$best_score" -le 3 ] && [ -n "$best_match" ]; then
+        echo "Did you mean '$best_match'?"
+    fi
+}
+
 # ─── Commands ───────────────────────────────────────────────────────────────
 
 cmd_build() {
@@ -370,6 +422,7 @@ cmd_attach() {
 
     if ! tmux_session_exists "$tmux_session_name"; then
         echo "Error: tmux session '$tmux_session_name' not found"
+        suggest_session "$session_name" "$CFG_PROJECT"
         echo "Run 'orca resume $session_name' to restart it"
         exit 1
     fi
@@ -397,6 +450,7 @@ cmd_stop() {
 
     if [ -z "$container_name" ]; then
         echo "Error: Session '$session_name' not found"
+        suggest_session "$session_name" "$CFG_PROJECT"
         exit 1
     fi
 
@@ -459,6 +513,7 @@ _resume_single() {
 
     if [ -z "$container_name" ]; then
         echo "Error: Session '$session_name' not found"
+        suggest_session "$session_name" "$CFG_PROJECT"
         return 1
     fi
 
