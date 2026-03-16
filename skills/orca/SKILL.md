@@ -79,7 +79,7 @@ Each window should match a real development need. Pick from these patterns based
 - Redis, queue workers, scheduled tasks
 
 **Always include:**
-- `claude` — `claude ${project}-${session}` with `resume_command: claude ${project}-${session} --resume`
+- `claude` — `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 claude --dangerously-skip-permissions` with `resume_command: CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 claude --dangerously-skip-permissions --resume`
 - `shell` — empty command (interactive shell)
 - `cli` — empty command (for one-off commands)
 

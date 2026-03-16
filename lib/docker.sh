@@ -188,6 +188,17 @@ docker_run_setup() {
         docker cp "$HOME/.claude/settings.json" "$container_name:$claude_home/.claude/settings.json"
     fi
 
+    # Copy Claude Code plugins into container (skills, marketplace cache, etc.)
+    if [ -d "$HOME/.claude/plugins" ]; then
+        echo "Copying Claude Code plugins..."
+        docker cp "$HOME/.claude/plugins" "$container_name:$claude_home/.claude/plugins"
+    fi
+
+    # Copy user-level MCP server config if it exists
+    if [ -f "$HOME/.claude/.mcp.json" ]; then
+        docker cp "$HOME/.claude/.mcp.json" "$container_name:$claude_home/.claude/.mcp.json"
+    fi
+
     # Set up gh CLI auth (macOS stores tokens in Keychain, so bind-mounting
     # the config doesn't work — extract the real token and inject it)
     if command -v gh &>/dev/null; then
