@@ -2,5 +2,5 @@
   "name": "orca",
   "version": "1.0.0",
   "description": "Docker-isolated development session orchestrator — create sandboxed dev sessions with tmux, git worktrees, and automatic port management",
-  "skills": ["skills/orca"]
+  "skills": ["skills/orca", "skills/orchestrator-editor"]
 }
