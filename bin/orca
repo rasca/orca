@@ -578,10 +578,7 @@ cmd_remove() {
 
     echo "Removing session '$session_name'..."
 
-    # Kill tmux
-    kill_tmux_session "$tmux_session_name"
-
-    # Remove container
+    # Remove container (also kills docker exec sessions in tmux windows)
     docker_rm_container "$container_name"
 
     # Remove named volumes
@@ -608,6 +605,10 @@ cmd_remove() {
     session_remove "$session_key"
 
     echo "Session '$session_name' removed successfully!"
+
+    # Kill tmux last — if orca remove is running inside this tmux session,
+    # killing it earlier would terminate this script before cleanup finishes
+    kill_tmux_session "$tmux_session_name"
 }
 
 cmd_list() {

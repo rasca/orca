@@ -43,8 +43,8 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && apt-get update && apt-get install -y gh \
     && rm -rf /var/lib/apt/lists/*
 
-# Claude Code
-RUN npm install -g @anthropic-ai/claude-code
+# Claude Code + Vercel CLI
+RUN npm install -g @anthropic-ai/claude-code vercel
 
 # Create dev user matching host UID/GID (parameterized at build time)
 ARG DEV_USER=dev
