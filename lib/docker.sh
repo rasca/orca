@@ -66,6 +66,9 @@ docker_start_container() {
     # Claude Code OAuth token (from `claude setup-token`)
     [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] && docker_args+=(-e "CLAUDE_CODE_OAUTH_TOKEN")
 
+    # Vercel token (if set as env var)
+    [ -n "$VERCEL_TOKEN" ] && docker_args+=(-e "VERCEL_TOKEN")
+
     # SSH agent forwarding (macOS Docker Desktop)
     if [ -S "/run/host-services/ssh-auth.sock" ] 2>/dev/null || true; then
         docker_args+=(--mount "type=bind,src=/run/host-services/ssh-auth.sock,target=/run/host-services/ssh-auth.sock")
@@ -197,6 +200,18 @@ docker_run_setup() {
             echo "Setting up GitHub CLI auth..."
             docker exec -e _GH_AUTH_TOKEN="$gh_token" "$container_name" \
                 bash -c 'echo "$_GH_AUTH_TOKEN" | gh auth login --with-token && gh auth setup-git' 2>/dev/null || true
+        fi
+    fi
+
+    # Set up Vercel CLI auth (copy auth config from host)
+    if [ -z "$VERCEL_TOKEN" ]; then
+        local vercel_auth_dir="$HOME/Library/Application Support/com.vercel.cli"
+        [ ! -d "$vercel_auth_dir" ] && vercel_auth_dir="$HOME/.config/com.vercel.cli"
+        if [ -f "$vercel_auth_dir/auth.json" ]; then
+            echo "Setting up Vercel CLI auth..."
+            local container_config_dir="/home/$(whoami)/.config/com.vercel.cli"
+            docker exec "$container_name" mkdir -p "$container_config_dir" 2>/dev/null || true
+            docker cp "$vercel_auth_dir/auth.json" "$container_name:$container_config_dir/auth.json"
         fi
     fi
 
